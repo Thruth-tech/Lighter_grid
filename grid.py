@@ -118,16 +118,41 @@ class GridTradingBot:
             return False
 
     async def get_current_price(self):
-        """Get current price from order book"""
-        url = f"{self.base_url}/api/v1/orderBookOrders?market_id={self.market_index}&limit=1"
-        response = requests.get(url)
-        data = response.json()
+        """Get current price from order book with error handling"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                url = f"{self.base_url}/api/v1/orderBookOrders?market_id={self.market_index}&limit=1"
+                response = requests.get(url, timeout=10)
 
-        best_bid = data['bids'][0]['price']
-        best_ask = data['asks'][0]['price']
-        current_price = (float(best_bid) + float(best_ask)) / 2
+                if response.status_code != 200:
+                    raise Exception(f"API returned status {response.status_code}")
 
-        return current_price, best_bid, best_ask
+                data = response.json()
+
+                # Validate orderbook data
+                if not data.get('bids') or not data.get('asks'):
+                    raise Exception("Empty orderbook")
+
+                if len(data['bids']) == 0 or len(data['asks']) == 0:
+                    raise Exception("No bids or asks in orderbook")
+
+                best_bid = data['bids'][0]['price']
+                best_ask = data['asks'][0]['price']
+                current_price = (float(best_bid) + float(best_ask)) / 2
+
+                return current_price, best_bid, best_ask
+
+            except requests.exceptions.Timeout:
+                print(f"   ⚠️  Price fetch timeout (attempt {attempt+1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2)
+            except Exception as e:
+                print(f"   ⚠️  Price fetch error (attempt {attempt+1}/{max_retries}): {str(e)[:60]}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2)
+
+        raise Exception("Failed to fetch current price after 3 attempts")
 
     def price_to_int(self, price_float):
         """Convert price to int format"""
@@ -173,6 +198,17 @@ class GridTradingBot:
         coin_per_order = (self.investment / self.grid_count * self.leverage) / current_price
         base_amount = int(coin_per_order * (10 ** self.size_decimals))
 
+        # Validate minimum order size
+        if base_amount == 0:
+            min_investment = (current_price / self.leverage / self.grid_count) * (10 ** self.size_decimals) * 2
+            raise ValueError(
+                f"❌ Order size too small! base_amount = {base_amount}\n"
+                f"   Investment: ${self.investment}\n"
+                f"   Grid count: {self.grid_count}\n"
+                f"   Per order: ${self.investment / self.grid_count:.2f}\n"
+                f"   Suggested: Either increase INVESTMENT_USDC to ${min_investment:.2f}+ or reduce GRID_COUNT to {int(self.investment * self.leverage / current_price * (10 ** self.size_decimals) / 2)}+"
+            )
+
         orders_placed = {'buy': 0, 'sell': 0}
 
         print(f"\n📝 Placing Initial Grid Orders:")
@@ -191,7 +227,7 @@ class GridTradingBot:
                     price=price_int,
                     is_ask=is_ask,
                     order_type=lighter.SignerClient.ORDER_TYPE_LIMIT,
-                    time_in_force=lighter.SignerClient.ORDER_TIME_IN_FORCE_POST_ONLY,
+                    time_in_force=lighter.SignerClient.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
                     reduce_only=False,
                     trigger_price=0
                 )
@@ -222,23 +258,40 @@ class GridTradingBot:
         return orders_placed
 
     async def get_active_orders(self):
-        """Get active orders from API"""
-        try:
-            auth_token, err = self.client.create_auth_token_with_expiry()
-            if err:
+        """Get active orders from API with proper error handling"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                auth_token, err = self.client.create_auth_token_with_expiry()
+                if err:
+                    print(f"   ⚠️  Auth error (attempt {attempt+1}/{max_retries}): {err}")
+                    await asyncio.sleep(2)
+                    continue
+
+                url = f"{self.base_url}/api/v1/accountActiveOrders?account_index={self.account_index}&market_id={self.market_index}"
+                headers = {"Authorization": auth_token}
+                response = requests.get(url, headers=headers, timeout=10)
+
+                if response.status_code != 200:
+                    print(f"   ⚠️  API error {response.status_code} (attempt {attempt+1}/{max_retries})")
+                    await asyncio.sleep(2)
+                    continue
+
+                data = response.json()
+
+                if 'orders' in data:
+                    return data['orders']
                 return []
 
-            url = f"{self.base_url}/api/v1/accountActiveOrders?account_index={self.account_index}&market_id={self.market_index}"
-            headers = {"Authorization": auth_token}
-            response = requests.get(url, headers=headers)
-            data = response.json()
+            except requests.exceptions.Timeout:
+                print(f"   ⚠️  API timeout (attempt {attempt+1}/{max_retries})")
+                await asyncio.sleep(2)
+            except Exception as e:
+                print(f"   ⚠️  API error (attempt {attempt+1}/{max_retries}): {str(e)[:60]}")
+                await asyncio.sleep(2)
 
-            if 'orders' in data:
-                return data['orders']
-            return []
-
-        except Exception as e:
-            return []
+        # After all retries failed, raise exception to trigger monitor pause
+        raise Exception("Failed to fetch active orders after 3 attempts")
 
     async def monitor_and_refill(self):
         """Monitor orders and refill with PROPER GRID LOGIC"""
@@ -260,8 +313,14 @@ class GridTradingBot:
                 # Build set of active client order indices
                 active_coi_set = set()
                 for order in active_orders:
-                    coi = int(order.get('client_order_index', 0))
-                    active_coi_set.add(coi)
+                    coi = order.get('client_order_index')
+                    if coi is not None:  # Only add valid COI, skip None/missing
+                        try:
+                            coi = int(coi)
+                            if coi > 0:  # Skip 0 as it's not a valid COI from our bot
+                                active_coi_set.add(coi)
+                        except (ValueError, TypeError):
+                            pass  # Skip invalid COI
 
                 # Debug on first check
                 if first_check:
@@ -269,22 +328,17 @@ class GridTradingBot:
                     print(f"   📊 Active in API: {len(active_orders)} orders\n")
                     first_check = False
 
-                # Periodic sync: Clean up tracking every 15 cycles (30 seconds)
-                sync_counter += 1
-                if sync_counter >= 15:
-                    # Remove any orders from tracking that don't exist in API
-                    stale_orders = [coi for coi in self.grid_orders.keys() if coi not in active_coi_set]
-                    if stale_orders:
-                        for coi in stale_orders:
-                            del self.grid_orders[coi]
-                        print(f"   🧹 Cleaned {len(stale_orders)} stale tracked orders")
-                    sync_counter = 0
-
-                # Check for filled orders
+                # Check for filled orders FIRST (before cleanup)
                 filled_orders = []
                 for coi, order_info in list(self.grid_orders.items()):
                     if coi not in active_coi_set:
                         filled_orders.append((coi, order_info))
+
+                # SAFETY: Limit check to prevent position accumulation
+                if len(filled_orders) > 5:
+                    print(f"   ⚠️  WARNING: {len(filled_orders)} orders disappeared at once!")
+                    print(f"   This might indicate cancellations, not fills. Pausing...")
+                    await asyncio.sleep(10)
 
                 # Process filled orders with PROPER GRID LOGIC
                 for coi, order_info in filled_orders:
@@ -297,6 +351,20 @@ class GridTradingBot:
                     volume_usd = coin_amount * filled_price
                     self.total_volume += volume_usd
                     self.trades_count += 1
+
+                    # SAFETY: Check position before placing refill
+                    # Grid bot should maintain near-zero position
+                    try:
+                        current_position = await self.get_current_position()
+                        max_safe_position = base_amount * 3  # Allow max 3x single order size
+
+                        if abs(current_position) > max_safe_position:
+                            print(f"   ⚠️  Position too large: {current_position}")
+                            print(f"   Skipping refill to prevent over-accumulation")
+                            del self.grid_orders[coi]
+                            continue
+                    except:
+                        pass  # If position check fails, continue anyway
 
                     if was_ask:
                         # SELL order filled → Place BUY at LOWER price
@@ -329,6 +397,18 @@ class GridTradingBot:
                     # Remove filled order from tracking
                     del self.grid_orders[coi]
 
+                # Periodic sync: Clean up tracking AFTER processing fills (every 15 cycles = 30 seconds)
+                sync_counter += 1
+                if sync_counter >= 15:
+                    # Remove any stale orders that weren't processed as fills
+                    # This catches orders cancelled manually on the exchange
+                    stale_orders = [coi for coi in self.grid_orders.keys() if coi not in active_coi_set]
+                    if stale_orders:
+                        for coi in stale_orders:
+                            del self.grid_orders[coi]
+                        print(f"   🧹 Cleaned {len(stale_orders)} stale tracked orders (manually cancelled)")
+                    sync_counter = 0
+
                 await asyncio.sleep(check_interval)
 
             except Exception as e:
@@ -338,13 +418,27 @@ class GridTradingBot:
     async def refill_order(self, price, is_ask, base_amount):
         """Place new order at specified price"""
         try:
-            # Check if order already exists at this price level
+            # Check if order already exists at this price level (in bot tracking)
             price_threshold = price * 0.001  # 0.1% tolerance
             for order_info in self.grid_orders.values():
                 if (abs(order_info['price'] - price) < price_threshold and
                     order_info['is_ask'] == is_ask):
                     print(f"      ⚠️  Order already exists at ${price:.2f}, skipping duplicate")
                     return
+
+            # SAFETY: Also check active orders from API to prevent duplicates
+            active_orders = await self.get_active_orders()
+            for order in active_orders:
+                order_price_int = int(order.get('price', 0))
+                order_is_ask = order.get('is_ask', False)
+
+                # Convert to float for comparison
+                if order_price_int > 0:
+                    order_price = order_price_int / (10 ** self.price_decimals)
+                    if (abs(order_price - price) < price_threshold and
+                        order_is_ask == is_ask):
+                        print(f"      ⚠️  Order already on exchange at ${price:.2f}, skipping")
+                        return
 
             price_int = self.price_to_int(price)
 
@@ -355,7 +449,7 @@ class GridTradingBot:
                 price=price_int,
                 is_ask=is_ask,
                 order_type=lighter.SignerClient.ORDER_TYPE_LIMIT,
-                time_in_force=lighter.SignerClient.ORDER_TIME_IN_FORCE_POST_ONLY,
+                time_in_force=lighter.SignerClient.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
                 reduce_only=False,
                 trigger_price=0
             )
