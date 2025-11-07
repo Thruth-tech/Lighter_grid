@@ -1,0 +1,40 @@
+# Environment variables - NEVER commit these!
+.env
+*.env
+.env.*
+config_*.env
+
+# Encrypted backups (if you create them)
+*.env.encrypted
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# Logs
+*.log
+bot.log
+bot_error.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Testing files (optional, you can remove these if you want to keep them)
+validate_setup.py
+TEST_PLAN.md

@@ -1,0 +1,110 @@
+ # Major Markets
+  MARKET_INDEX=0    # ETH          | Price: 2 decimals | Size: 4 decimals        
+  MARKET_INDEX=1    # BTC          | Price: 1 decimals | Size: 5 decimals        
+  MARKET_INDEX=2    # SOL          | Price: 3 decimals | Size: 3 decimals        
+  MARKET_INDEX=3    # DOGE         | Price: 6 decimals | Size: 0 decimals        
+  MARKET_INDEX=4    # 1000PEPE     | Price: 6 decimals | Size: 0 decimals        
+  MARKET_INDEX=5    # WIF          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=6    # WLD          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=7    # XRP          | Price: 6 decimals | Size: 0 decimals        
+  MARKET_INDEX=8    # LINK         | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=9    # AVAX         | Price: 4 decimals | Size: 2 decimals        
+
+  # Layer 1/2 Blockchains
+  MARKET_INDEX=10   # NEAR         | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=11   # DOT          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=12   # TON          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=14   # POL          | Price: 6 decimals | Size: 0 decimals        
+  MARKET_INDEX=16   # SUI          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=25   # BNB          | Price: 4 decimals | Size: 2 decimals        
+  MARKET_INDEX=31   # APT          | Price: 4 decimals | Size: 2 decimals        
+  MARKET_INDEX=32   # SEI          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=35   # LTC          | Price: 3 decimals | Size: 3 decimals        
+  MARKET_INDEX=39   # ADA          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=43   # TRX          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=50   # ARB          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=55   # OP           | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=56   # ZK           | Price: 6 decimals | Size: 0 decimals        
+  MARKET_INDEX=58   # BCH          | Price: 3 decimals | Size: 3 decimals        
+  MARKET_INDEX=59   # HBAR         | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=63   # MNT          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=67   # TIA          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=73   # CRO          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=76   # LINEA        | Price: 6 decimals | Size: 0 decimals        
+  MARKET_INDEX=77   # XMR          | Price: 3 decimals | Size: 3 decimals        
+  MARKET_INDEX=90   # ZEC          | Price: 3 decimals | Size: 3 decimals        
+
+  # DeFi Tokens
+  MARKET_INDEX=13   # TAO          | Price: 3 decimals | Size: 3 decimals        
+  MARKET_INDEX=26   # JUP          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=27   # AAVE         | Price: 3 decimals | Size: 3 decimals        
+  MARKET_INDEX=29   # ENA          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=30   # UNI          | Price: 4 decimals | Size: 2 decimals        
+  MARKET_INDEX=36   # CRV          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=37   # PENDLE       | Price: 4 decimals | Size: 2 decimals        
+  MARKET_INDEX=38   # ONDO         | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=46   # LDO          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=49   # EIGEN        | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=52   # GRASS        | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=60   # ZRO          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=61   # GMX          | Price: 4 decimals | Size: 2 decimals        
+  MARKET_INDEX=62   # DYDX         | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=64   # ETHFI        | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=65   # AERO         | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=68   # MORPHO       | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=78   # PYTH         | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=79   # SKY          | Price: 6 decimals | Size: 0 decimals        
+
+  # Meme Coins
+  MARKET_INDEX=17   # 1000SHIB     | Price: 6 decimals | Size: 0 decimals        
+  MARKET_INDEX=18   # 1000BONK     | Price: 6 decimals | Size: 0 decimals        
+  MARKET_INDEX=19   # 1000FLOKI    | Price: 6 decimals | Size: 0 decimals        
+  MARKET_INDEX=20   # BERA         | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=21   # FARTCOIN     | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=22   # AI16Z        | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=23   # POPCAT       | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=40   # S            | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=41   # VIRTUAL      | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=42   # SPX          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=44   # SYRUP        | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=47   # PENGU        | Price: 6 decimals | Size: 0 decimals        
+  MARKET_INDEX=53   # ZORA         | Price: 6 decimals | Size: 0 decimals        
+  MARKET_INDEX=66   # USELESS      | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=70   # YZY          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=81   # 1000TOSHI    | Price: 4 decimals | Size: 2 decimals        
+  MARKET_INDEX=91   # MON          | Price: 5 decimals | Size: 1 decimals        
+
+  # Political/Trump Tokens
+  MARKET_INDEX=15   # TRUMP        | Price: 4 decimals | Size: 2 decimals        
+  MARKET_INDEX=72   # WLFI         | Price: 5 decimals | Size: 1 decimals        
+
+  # AI/Tech Tokens
+  MARKET_INDEX=33   # KAITO        | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=74   # NMR          | Price: 4 decimals | Size: 2 decimals        
+
+  # Other Assets
+  MARKET_INDEX=24   # HYPE         | Price: 4 decimals | Size: 2 decimals        
+  MARKET_INDEX=34   # IP           | Price: 4 decimals | Size: 2 decimals        
+  MARKET_INDEX=45   # PUMP         | Price: 6 decimals | Size: 0 decimals        
+  MARKET_INDEX=48   # PAXG         | Price: 2 decimals | Size: 4 decimals        
+  (Gold)
+  MARKET_INDEX=51   # RESOLV       | Price: 6 decimals | Size: 0 decimals        
+  MARKET_INDEX=57   # PROVE        | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=69   # VVV          | Price: 4 decimals | Size: 2 decimals        
+  MARKET_INDEX=71   # XPL          | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=75   # DOLO         | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=80   # MYX          | Price: 4 decimals | Size: 2 decimals        
+  MARKET_INDEX=82   # AVNT         | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=83   # ASTER        | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=84   # 0G           | Price: 4 decimals | Size: 2 decimals        
+  MARKET_INDEX=85   # STBL         | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=86   # APEX         | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=87   # FF           | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=88   # 2Z           | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=89   # EDEN         | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=92   # XAU          | Price: 2 decimals | Size: 4 decimals 
+  (Gold)
+  MARKET_INDEX=93   # XAG          | Price: 4 decimals | Size: 2 decimals        
+  (Silver)
+  MARKET_INDEX=94   # MEGA         | Price: 5 decimals | Size: 1 decimals        
+  MARKET_INDEX=95   # MET          | Price: 5 decimals | Size: 1 decimals  

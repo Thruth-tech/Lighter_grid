@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:apidocs.lighter.xyz)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(python -c:*)",
+      "Bash(curl:*)",
+      "Bash(move proper_grid_bot.py grid.py)",
+      "Bash(python check_positions.py:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
