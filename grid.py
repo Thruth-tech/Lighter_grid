@@ -251,9 +251,17 @@ class GridTradingBot:
             except Exception as e:
                 print(f"   ✗ Error at ${price:,.2f}: {str(e)[:80]}")
 
+        total_placed = orders_placed['buy'] + orders_placed['sell']
         print(f"\n✅ Initial Grid Complete:")
         print(f"   {orders_placed['buy']} buy orders")
         print(f"   {orders_placed['sell']} sell orders")
+        print(f"   Total: {total_placed}/{self.grid_count}")
+
+        # Validate all orders were placed
+        if total_placed < self.grid_count:
+            print(f"\n   ⚠️  WARNING: Only {total_placed}/{self.grid_count} orders placed!")
+            print(f"   Missing {self.grid_count - total_placed} orders from initial setup")
+            print(f"   This may cause the grid to have fewer orders than expected")
 
         return orders_placed
 
@@ -299,16 +307,23 @@ class GridTradingBot:
         print(f"   Strategy: BUY LOW → SELL HIGH")
         print(f"   Monitoring every 2 seconds")
         print(f"   Press Ctrl+C to stop")
+        print(f"   Auto-exit after 10 consecutive errors (with cleanup)")
         print(f"   ⏳ Waiting 5s for orders to sync...\n")
 
         await asyncio.sleep(5)
         check_interval = 2
         first_check = True
         sync_counter = 0
+        consecutive_errors = 0
+        max_consecutive_errors = 10
+        heartbeat_counter = 0
 
         while self.running:
             try:
                 active_orders = await self.get_active_orders()
+
+                # Reset error counter on success
+                consecutive_errors = 0
 
                 # Build set of active client order indices
                 active_coi_set = set()
@@ -354,18 +369,19 @@ class GridTradingBot:
 
                     # SAFETY: Check position before placing refill
                     # Grid bot should maintain near-zero position
+                    skip_refill = False
                     try:
                         current_position = await self.get_current_position()
                         max_safe_position = base_amount * 3  # Allow max 3x single order size
 
                         if abs(current_position) > max_safe_position:
                             print(f"   ⚠️  Position too large: {current_position}")
-                            print(f"   Skipping refill to prevent over-accumulation")
-                            del self.grid_orders[coi]
-                            continue
+                            print(f"   Will still attempt refill but monitor position")
+                            # Don't skip, just warn - let the refill happen
                     except:
                         pass  # If position check fails, continue anyway
 
+                    refill_success = False
                     if was_ask:
                         # SELL order filled → Place BUY at LOWER price
                         print(f"   💰 SELL @ ${filled_price:,.2f} filled | Volume: ${volume_usd:.0f}")
@@ -375,7 +391,7 @@ class GridTradingBot:
 
                         print(f"      → Placing BUY @ ${new_buy_price:,.2f} (to buy back {self.grid_spacing_percent*100}% cheaper)")
 
-                        await self.refill_order(new_buy_price, False, base_amount)
+                        refill_success = await self.refill_order(new_buy_price, False, base_amount)
 
                         # Track profit
                         estimated_profit = (filled_price - new_buy_price) * coin_amount
@@ -391,11 +407,15 @@ class GridTradingBot:
 
                         print(f"      → Placing SELL @ ${new_sell_price:,.2f} (to sell {self.grid_spacing_percent*100}% higher)")
 
-                        await self.refill_order(new_sell_price, True, base_amount)
+                        refill_success = await self.refill_order(new_sell_price, True, base_amount)
                         self.completed_cycles += 0.5
 
                     # Remove filled order from tracking
                     del self.grid_orders[coi]
+
+                    # Alert if refill failed
+                    if not refill_success:
+                        print(f"      🚨 CRITICAL: Refill FAILED after retries! Grid has {len(self.grid_orders)} orders (expected {self.grid_count})")
 
                 # Periodic sync: Clean up tracking AFTER processing fills (every 15 cycles = 30 seconds)
                 sync_counter += 1
@@ -409,67 +429,113 @@ class GridTradingBot:
                         print(f"   🧹 Cleaned {len(stale_orders)} stale tracked orders (manually cancelled)")
                     sync_counter = 0
 
+                # Heartbeat logging every 30 cycles (60 seconds)
+                heartbeat_counter += 1
+                if heartbeat_counter >= 30:
+                    tracked_orders = len(self.grid_orders)
+                    order_status = "✅" if tracked_orders >= self.grid_count else "⚠️"
+                    print(f"   💚 Bot healthy | {order_status} Orders: {tracked_orders}/{self.grid_count} | Cycles: {self.completed_cycles:.1f} | Profit: ${self.total_profit:.2f}")
+
+                    # Alert if orders are significantly below expected
+                    if tracked_orders < self.grid_count - 2:
+                        print(f"   🚨 WARNING: Missing {self.grid_count - tracked_orders} orders! Expected {self.grid_count}, have {tracked_orders}")
+
+                    heartbeat_counter = 0
+
                 await asyncio.sleep(check_interval)
 
             except Exception as e:
-                print(f"   ⚠️  Monitor error: {e}")
+                consecutive_errors += 1
+                print(f"   ⚠️  Monitor error ({consecutive_errors}/{max_consecutive_errors}): {e}")
+
+                if consecutive_errors >= max_consecutive_errors:
+                    print(f"\n   ❌ CRITICAL: {max_consecutive_errors} consecutive errors!")
+                    print(f"   🛑 Stopping bot and canceling all orders for safety...")
+                    self.running = False
+                    break
+
                 await asyncio.sleep(check_interval)
 
     async def refill_order(self, price, is_ask, base_amount):
-        """Place new order at specified price"""
-        try:
-            # Check if order already exists at this price level (in bot tracking)
-            price_threshold = price * 0.001  # 0.1% tolerance
-            for order_info in self.grid_orders.values():
-                if (abs(order_info['price'] - price) < price_threshold and
-                    order_info['is_ask'] == is_ask):
-                    print(f"      ⚠️  Order already exists at ${price:.2f}, skipping duplicate")
-                    return
+        """Place new order at specified price with retry logic"""
+        max_retries = 3
 
-            # SAFETY: Also check active orders from API to prevent duplicates
-            active_orders = await self.get_active_orders()
-            for order in active_orders:
-                order_price_int = int(order.get('price', 0))
-                order_is_ask = order.get('is_ask', False)
+        for attempt in range(max_retries):
+            try:
+                # Check if order already exists at this price level (in bot tracking)
+                price_threshold = price * 0.001  # 0.1% tolerance
+                for order_info in self.grid_orders.values():
+                    if (abs(order_info['price'] - price) < price_threshold and
+                        order_info['is_ask'] == is_ask):
+                        print(f"      ⚠️  Order already exists at ${price:.2f}, skipping duplicate")
+                        return True  # Return success since order exists
 
-                # Convert to float for comparison
-                if order_price_int > 0:
-                    order_price = order_price_int / (10 ** self.price_decimals)
-                    if (abs(order_price - price) < price_threshold and
-                        order_is_ask == is_ask):
-                        print(f"      ⚠️  Order already on exchange at ${price:.2f}, skipping")
-                        return
+                # SAFETY: Check active orders from API (with error handling)
+                try:
+                    active_orders = await self.get_active_orders()
+                    for order in active_orders:
+                        order_price_int = int(order.get('price', 0))
+                        order_is_ask = order.get('is_ask', False)
 
-            price_int = self.price_to_int(price)
+                        # Convert to float for comparison
+                        if order_price_int > 0:
+                            order_price = order_price_int / (10 ** self.price_decimals)
+                            if (abs(order_price - price) < price_threshold and
+                                order_is_ask == is_ask):
+                                print(f"      ⚠️  Order already on exchange at ${price:.2f}, skipping")
+                                return True  # Return success since order exists
+                except Exception as api_err:
+                    # Don't fail refill just because API check failed
+                    if attempt == 0:  # Only log on first attempt
+                        print(f"      ⚠️  API check failed (will still place order): {str(api_err)[:40]}")
 
-            tx, tx_hash, err = await self.client.create_order(
-                market_index=self.market_index,
-                client_order_index=self.order_index,
-                base_amount=base_amount,
-                price=price_int,
-                is_ask=is_ask,
-                order_type=lighter.SignerClient.ORDER_TYPE_LIMIT,
-                time_in_force=lighter.SignerClient.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
-                reduce_only=False,
-                trigger_price=0
-            )
+                price_int = self.price_to_int(price)
 
-            if not err:
-                # Track new order
-                self.grid_orders[self.order_index] = {
-                    'price': price,
-                    'is_ask': is_ask,
-                    'base_amount': base_amount,
-                    'price_int': price_int
-                }
-                print(f"      ✅ {'SELL' if is_ask else 'BUY'} order placed")
-            else:
-                print(f"      ⚠️  Refill failed: {str(err)[:60]}")
+                tx, tx_hash, err = await self.client.create_order(
+                    market_index=self.market_index,
+                    client_order_index=self.order_index,
+                    base_amount=base_amount,
+                    price=price_int,
+                    is_ask=is_ask,
+                    order_type=lighter.SignerClient.ORDER_TYPE_LIMIT,
+                    time_in_force=lighter.SignerClient.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+                    reduce_only=False,
+                    trigger_price=0
+                )
 
-            self.order_index += 1
+                if not err:
+                    # Track new order
+                    self.grid_orders[self.order_index] = {
+                        'price': price,
+                        'is_ask': is_ask,
+                        'base_amount': base_amount,
+                        'price_int': price_int
+                    }
+                    print(f"      ✅ {'SELL' if is_ask else 'BUY'} order placed")
+                    self.order_index += 1
+                    return True  # Success
+                else:
+                    print(f"      ⚠️  Refill failed (attempt {attempt+1}/{max_retries}): {str(err)[:60]}")
+                    self.order_index += 1
 
-        except Exception as e:
-            print(f"      ❌ Refill error: {e}")
+                    # Retry on next iteration
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(2)
+                        continue
+                    else:
+                        return False  # Failed after all retries
+
+            except Exception as e:
+                print(f"      ❌ Refill error (attempt {attempt+1}/{max_retries}): {str(e)[:60]}")
+                self.order_index += 1
+
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2)
+                    continue
+                else:
+                    return False  # Failed after all retries
+
+        return False
 
     async def cancel_all_orders(self):
         """Cancel all active orders - simplified version"""
