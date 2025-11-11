@@ -52,6 +52,7 @@ class GridTradingBot:
         # Grid tracking
         self.running = True
         self.grid_orders = {}  # {client_order_index: {'price': float, 'is_ask': bool, 'base_amount': int}}
+        self.failed_refills = []  # Track failed refills to retry later: [{'price': float, 'is_ask': bool, 'base_amount': int}]
 
         # Statistics
         self.total_profit = 0.0
@@ -227,7 +228,7 @@ class GridTradingBot:
                     price=price_int,
                     is_ask=is_ask,
                     order_type=lighter.SignerClient.ORDER_TYPE_LIMIT,
-                    time_in_force=lighter.SignerClient.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+                    time_in_force=lighter.SignerClient.ORDER_TIME_IN_FORCE_POST_ONLY,
                     reduce_only=False,
                     trigger_price=0
                 )
@@ -301,6 +302,118 @@ class GridTradingBot:
         # After all retries failed, raise exception to trigger monitor pause
         raise Exception("Failed to fetch active orders after 3 attempts")
 
+    async def heal_grid(self):
+        """Grid Healing: Check and refill missing orders to maintain full grid"""
+        try:
+            tracked_count = len(self.grid_orders)
+
+            # Check if we need healing
+            if tracked_count >= self.grid_count:
+                # Try to retry failed refills if any
+                if self.failed_refills:
+                    print(f"   🔧 Retrying {len(self.failed_refills)} failed refills...")
+                    retry_queue = self.failed_refills.copy()
+                    self.failed_refills.clear()
+
+                    for refill_info in retry_queue:
+                        success = await self.refill_order(
+                            refill_info['price'],
+                            refill_info['is_ask'],
+                            refill_info['base_amount']
+                        )
+                        if not success:
+                            print(f"      ⚠️  Retry still failed, will try again later")
+                        await asyncio.sleep(1)
+                return True
+
+            missing_count = self.grid_count - tracked_count
+            print(f"\n   🏥 GRID HEALING: Missing {missing_count} orders (have {tracked_count}/{self.grid_count})")
+
+            # Retry failed refills first
+            if self.failed_refills:
+                print(f"   🔧 Retrying {len(self.failed_refills)} failed refills first...")
+                retry_queue = self.failed_refills.copy()
+                self.failed_refills.clear()
+
+                for refill_info in retry_queue:
+                    success = await self.refill_order(
+                        refill_info['price'],
+                        refill_info['is_ask'],
+                        refill_info['base_amount']
+                    )
+                    if success:
+                        missing_count -= 1
+                    await asyncio.sleep(1)
+
+            # If still missing orders, analyze grid and fill gaps
+            if missing_count > 0:
+                print(f"   🔍 Analyzing grid structure to fill {missing_count} gaps...")
+
+                # Get current price
+                current_price, _, _ = await self.get_current_price()
+
+                # Get all existing order prices
+                existing_prices = sorted([info['price'] for info in self.grid_orders.values()])
+
+                # Generate expected grid levels
+                grids_per_side = self.grid_count // 2
+                expected_levels = []
+
+                # Buy grids (below current price)
+                for i in range(1, grids_per_side + 1):
+                    price = current_price * (1 - self.grid_spacing_percent * i)
+                    expected_levels.append(price)
+
+                # Sell grids (above current price)
+                for i in range(1, grids_per_side + 1):
+                    price = current_price * (1 + self.grid_spacing_percent * i)
+                    expected_levels.append(price)
+
+                expected_levels.sort()
+
+                # Find missing levels
+                price_threshold = current_price * 0.002  # 0.2% tolerance for matching
+                missing_levels = []
+
+                for expected_price in expected_levels:
+                    # Check if this level exists in current orders
+                    found = False
+                    for existing_price in existing_prices:
+                        if abs(existing_price - expected_price) < price_threshold:
+                            found = True
+                            break
+
+                    if not found:
+                        missing_levels.append(expected_price)
+
+                # Fill missing levels (limit to prevent over-filling)
+                filled_count = 0
+                max_to_fill = min(len(missing_levels), missing_count, 10)  # Max 10 per healing cycle
+
+                print(f"   📝 Found {len(missing_levels)} missing price levels, filling up to {max_to_fill}...")
+
+                # Calculate base amount (same as initial setup)
+                coin_per_order = (self.investment / self.grid_count * self.leverage) / current_price
+                base_amount = int(coin_per_order * (10 ** self.size_decimals))
+
+                for missing_price in missing_levels[:max_to_fill]:
+                    is_ask = missing_price > current_price
+
+                    print(f"   🩹 Healing {'SELL' if is_ask else 'BUY'} @ ${missing_price:,.2f}")
+
+                    success = await self.refill_order(missing_price, is_ask, base_amount)
+                    if success:
+                        filled_count += 1
+
+                    await asyncio.sleep(1.5)
+
+                print(f"   ✅ Grid healing complete: Added {filled_count} orders")
+                return True
+
+        except Exception as e:
+            print(f"   ⚠️  Grid healing error: {str(e)[:80]}")
+            return False
+
     async def monitor_and_refill(self):
         """Monitor orders and refill with PROPER GRID LOGIC"""
         print(f"\n🔄 Proper Grid Trading Started")
@@ -317,6 +430,7 @@ class GridTradingBot:
         consecutive_errors = 0
         max_consecutive_errors = 10
         heartbeat_counter = 0
+        healing_counter = 0  # Counter for grid healing (every 60 cycles = 2 minutes)
 
         while self.running:
             try:
@@ -420,13 +534,20 @@ class GridTradingBot:
                 # Periodic sync: Clean up tracking AFTER processing fills (every 15 cycles = 30 seconds)
                 sync_counter += 1
                 if sync_counter >= 15:
-                    # Remove any stale orders that weren't processed as fills
-                    # This catches orders cancelled manually on the exchange
-                    stale_orders = [coi for coi in self.grid_orders.keys() if coi not in active_coi_set]
-                    if stale_orders:
-                        for coi in stale_orders:
-                            del self.grid_orders[coi]
-                        print(f"   🧹 Cleaned {len(stale_orders)} stale tracked orders (manually cancelled)")
+                    # SAFETY: Only cleanup if we actually got active orders from API
+                    # If active_orders is empty but we have tracked orders, it means API might have failed
+                    # Don't cleanup in that case to prevent accidental deletion
+                    if len(active_orders) > 0 or len(self.grid_orders) == 0:
+                        # Remove any stale orders that weren't processed as fills
+                        # This catches orders cancelled manually on the exchange
+                        stale_orders = [coi for coi in self.grid_orders.keys() if coi not in active_coi_set]
+                        if stale_orders:
+                            for coi in stale_orders:
+                                del self.grid_orders[coi]
+                            print(f"   🧹 Cleaned {len(stale_orders)} stale tracked orders (manually cancelled)")
+                    else:
+                        # API might be down, skip cleanup to be safe
+                        print(f"   ⚠️  Skipping cleanup: API returned 0 orders but tracking {len(self.grid_orders)}")
                     sync_counter = 0
 
                 # Heartbeat logging every 30 cycles (60 seconds)
@@ -441,6 +562,12 @@ class GridTradingBot:
                         print(f"   🚨 WARNING: Missing {self.grid_count - tracked_orders} orders! Expected {self.grid_count}, have {tracked_orders}")
 
                     heartbeat_counter = 0
+
+                # Grid Healing every 60 cycles (2 minutes)
+                healing_counter += 1
+                if healing_counter >= 60:
+                    await self.heal_grid()
+                    healing_counter = 0
 
                 await asyncio.sleep(check_interval)
 
@@ -464,26 +591,48 @@ class GridTradingBot:
             try:
                 # Check if order already exists at this price level (in bot tracking)
                 price_threshold = price * 0.001  # 0.1% tolerance
-                for order_info in self.grid_orders.values():
+                for coi, order_info in self.grid_orders.items():
                     if (abs(order_info['price'] - price) < price_threshold and
                         order_info['is_ask'] == is_ask):
-                        print(f"      ⚠️  Order already exists at ${price:.2f}, skipping duplicate")
+                        print(f"      ⚠️  Order already exists at ${price:.2f} (COI: {coi}), skipping duplicate")
                         return True  # Return success since order exists
 
-                # SAFETY: Check active orders from API (with error handling)
+                # SAFETY: Check active orders from API and TRACK if found
                 try:
                     active_orders = await self.get_active_orders()
                     for order in active_orders:
                         order_price_int = int(order.get('price', 0))
                         order_is_ask = order.get('is_ask', False)
+                        order_coi = order.get('client_order_index')
+                        order_base_amount = order.get('remaining_base_amount', '0')
 
                         # Convert to float for comparison
-                        if order_price_int > 0:
+                        if order_price_int > 0 and order_coi:
                             order_price = order_price_int / (10 ** self.price_decimals)
                             if (abs(order_price - price) < price_threshold and
                                 order_is_ask == is_ask):
-                                print(f"      ⚠️  Order already on exchange at ${price:.2f}, skipping")
-                                return True  # Return success since order exists
+                                # IMPORTANT: Track this order if not already tracked
+                                try:
+                                    order_coi = int(order_coi)
+                                    if order_coi not in self.grid_orders:
+                                        # Parse base_amount from string
+                                        try:
+                                            base_amt_int = int(float(order_base_amount) * (10 ** self.size_decimals))
+                                        except:
+                                            base_amt_int = base_amount  # Fallback to expected amount
+
+                                        self.grid_orders[order_coi] = {
+                                            'price': order_price,
+                                            'is_ask': order_is_ask,
+                                            'base_amount': base_amt_int,
+                                            'price_int': order_price_int
+                                        }
+                                        print(f"      ✅ Found & tracked existing order at ${price:.2f} (COI: {order_coi})")
+                                    else:
+                                        print(f"      ⚠️  Order already tracked at ${price:.2f} (COI: {order_coi})")
+                                    return True  # Return success since order exists
+                                except (ValueError, TypeError):
+                                    pass  # Skip invalid COI
                 except Exception as api_err:
                     # Don't fail refill just because API check failed
                     if attempt == 0:  # Only log on first attempt
@@ -498,7 +647,7 @@ class GridTradingBot:
                     price=price_int,
                     is_ask=is_ask,
                     order_type=lighter.SignerClient.ORDER_TYPE_LIMIT,
-                    time_in_force=lighter.SignerClient.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+                    time_in_force=lighter.SignerClient.ORDER_TIME_IN_FORCE_POST_ONLY,
                     reduce_only=False,
                     trigger_price=0
                 )
@@ -523,6 +672,15 @@ class GridTradingBot:
                         await asyncio.sleep(2)
                         continue
                     else:
+                        # Save to failed_refills for retry later
+                        self.failed_refills.append({
+                            'price': price,
+                            'is_ask': is_ask,
+                            'base_amount': base_amount
+                        })
+                        # Limit queue size to prevent memory leak (60 grids × 3 retries + buffer)
+                        self.failed_refills = self.failed_refills[-200:]
+                        print(f"      📌 Saved to retry queue ({len(self.failed_refills)} pending)")
                         return False  # Failed after all retries
 
             except Exception as e:
@@ -533,6 +691,15 @@ class GridTradingBot:
                     await asyncio.sleep(2)
                     continue
                 else:
+                    # Save to failed_refills for retry later
+                    self.failed_refills.append({
+                        'price': price,
+                        'is_ask': is_ask,
+                        'base_amount': base_amount
+                    })
+                    # Limit queue size to prevent memory leak (60 grids × 3 retries + buffer)
+                    self.failed_refills = self.failed_refills[-200:]
+                    print(f"      📌 Saved to retry queue ({len(self.failed_refills)} pending)")
                     return False  # Failed after all retries
 
         return False
