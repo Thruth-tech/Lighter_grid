@@ -54,6 +54,7 @@ class GridTradingBot:
         self.grid_orders = {}  # {client_order_index: {'price': float, 'is_ask': bool, 'base_amount': int}}
         self.failed_refills = []  # Track failed refills to retry later: [{'price': float, 'is_ask': bool, 'base_amount': int}]
         self.fixed_grid_levels = []  # Store original fixed grid price levels (NEVER changes)
+        self.grid_base_amount = None  # Cache original order size for consistency
 
         # Statistics
         self.total_profit = 0.0
@@ -161,6 +162,61 @@ class GridTradingBot:
         price_str = f"{price_float:.{self.price_decimals}f}"
         price_int = int(price_str.replace(".", ""))
         return price_int
+
+    def find_next_grid_level_from_filled(self, filled_price, need_higher_level):
+        """
+        Find the NEXT grid level after a fill - NO DRIFT, uses fixed_grid_levels array!
+
+        Args:
+            filled_price: Price where order just filled
+            need_higher_level: True = find next level ABOVE (for SELL after BUY)
+                              False = find next level BELOW (for BUY after SELL)
+
+        Returns:
+            Exact price from fixed_grid_levels array, or None if boundary reached
+        """
+        if not self.fixed_grid_levels:
+            return None
+
+        sorted_levels = sorted(self.fixed_grid_levels)
+
+        if need_higher_level:
+            # SELL after BUY: Find next grid level ABOVE filled_price
+            for level in sorted_levels:
+                if level > filled_price * 1.001:  # 0.1% buffer for floating point
+                    # Check if this level already has a sell order
+                    price_threshold = level * 0.002  # 0.2% tolerance
+                    has_order = False
+
+                    for order_info in self.grid_orders.values():
+                        if (abs(order_info['price'] - level) < price_threshold and
+                            order_info['is_ask'] == True):
+                            has_order = True
+                            break
+
+                    if not has_order:
+                        return level
+
+            return None  # Reached top of grid
+
+        else:
+            # BUY after SELL: Find next grid level BELOW filled_price
+            for level in reversed(sorted_levels):
+                if level < filled_price * 0.999:  # 0.1% buffer for floating point
+                    # Check if this level already has a buy order
+                    price_threshold = level * 0.002  # 0.2% tolerance
+                    has_order = False
+
+                    for order_info in self.grid_orders.values():
+                        if (abs(order_info['price'] - level) < price_threshold and
+                            order_info['is_ask'] == False):
+                            has_order = True
+                            break
+
+                    if not has_order:
+                        return level
+
+            return None  # Reached bottom of grid
 
     def find_nearest_available_grid_level(self, current_price, need_buy_level):
         """
@@ -273,6 +329,9 @@ class GridTradingBot:
         """Place initial grid limit orders"""
         coin_per_order = (self.investment / self.grid_count * self.leverage) / current_price
         base_amount = int(coin_per_order * (10 ** self.size_decimals))
+
+        # Cache base_amount for consistent healing later
+        self.grid_base_amount = base_amount
 
         # Validate minimum order size
         if base_amount == 0:
@@ -462,9 +521,13 @@ class GridTradingBot:
 
                 print(f"   📝 Found {len(missing_levels)} missing price levels, filling up to {max_to_fill}...")
 
-                # Calculate base amount (same as initial setup)
-                coin_per_order = (self.investment / self.grid_count * self.leverage) / current_price
-                base_amount = int(coin_per_order * (10 ** self.size_decimals))
+                # Use cached base amount for consistency (prevents size drift as price changes)
+                base_amount = self.grid_base_amount
+                if base_amount is None:
+                    # Fallback: recalculate if cache not available (shouldn't happen)
+                    coin_per_order = (self.investment / self.grid_count * self.leverage) / current_price
+                    base_amount = int(coin_per_order * (10 ** self.size_decimals))
+                    print(f"   ⚠️  Using recalculated base_amount: {base_amount}")
 
                 for missing_price in missing_levels[:max_to_fill]:
                     is_ask = missing_price > current_price
@@ -567,21 +630,14 @@ class GridTradingBot:
 
                     refill_success = False
                     if was_ask:
-                        # SELL order filled → Place BUY at nearest fixed grid level below current price
+                        # SELL order filled → Place BUY at NEXT grid level BELOW filled price
                         print(f"   💰 SELL @ ${filled_price:,.2f} filled | Volume: ${volume_usd:.0f}")
 
-                        # Get current price
-                        try:
-                            current_price, _, _ = await self.get_current_price()
-                        except:
-                            # Fallback to filled price if can't get current price
-                            current_price = filled_price
-
-                        # Find nearest BUY grid level using fixed grid
-                        new_buy_price = self.find_nearest_available_grid_level(current_price, need_buy_level=True)
+                        # Find NEXT grid level BELOW filled_price (no drift!)
+                        new_buy_price = self.find_next_grid_level_from_filled(filled_price, need_higher_level=False)
 
                         if new_buy_price:
-                            print(f"      → Placing BUY @ ${new_buy_price:,.2f} (fixed grid level)")
+                            print(f"      → Placing BUY @ ${new_buy_price:,.2f} (next grid level below)")
 
                             refill_success = await self.refill_order(new_buy_price, False, base_amount)
 
@@ -590,29 +646,22 @@ class GridTradingBot:
                             self.total_profit += estimated_profit
                             self.completed_cycles += 0.5
                         else:
-                            print(f"      ⚠️  No available BUY grid level found (price may be at grid boundary)")
+                            print(f"      ⚠️  No available BUY grid level found (reached bottom of grid)")
 
                     else:
-                        # BUY order filled → Place SELL at nearest fixed grid level above current price
+                        # BUY order filled → Place SELL at NEXT grid level ABOVE filled price
                         print(f"   📈 BUY @ ${filled_price:,.2f} filled | Volume: ${volume_usd:.0f}")
 
-                        # Get current price
-                        try:
-                            current_price, _, _ = await self.get_current_price()
-                        except:
-                            # Fallback to filled price if can't get current price
-                            current_price = filled_price
-
-                        # Find nearest SELL grid level using fixed grid
-                        new_sell_price = self.find_nearest_available_grid_level(current_price, need_buy_level=False)
+                        # Find NEXT grid level ABOVE filled_price (no drift!)
+                        new_sell_price = self.find_next_grid_level_from_filled(filled_price, need_higher_level=True)
 
                         if new_sell_price:
-                            print(f"      → Placing SELL @ ${new_sell_price:,.2f} (fixed grid level)")
+                            print(f"      → Placing SELL @ ${new_sell_price:,.2f} (next grid level above)")
 
                             refill_success = await self.refill_order(new_sell_price, True, base_amount)
                             self.completed_cycles += 0.5
                         else:
-                            print(f"      ⚠️  No available SELL grid level found (price may be at grid boundary)")
+                            print(f"      ⚠️  No available SELL grid level found (reached top of grid)")
 
                     # Remove filled order from tracking
                     del self.grid_orders[coi]
@@ -680,7 +729,7 @@ class GridTradingBot:
         for attempt in range(max_retries):
             try:
                 # Check if order already exists at this price level (in bot tracking)
-                price_threshold = price * 0.001  # 0.1% tolerance
+                price_threshold = price * 0.002  # 0.2% tolerance (consistent with grid healing)
                 for coi, order_info in self.grid_orders.items():
                     if (abs(order_info['price'] - price) < price_threshold and
                         order_info['is_ask'] == is_ask):
